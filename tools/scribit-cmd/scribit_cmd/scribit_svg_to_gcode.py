@@ -46,6 +46,9 @@ PEN_SLOTS_Z: Dict[int, int] = {1: 89, 2: 161, 3: 233, 4: 305}
 # Proven reliable Z reference after homing (G77)
 Z_AFTER_G77 = -56.0
 
+# You may use your own starting position, e.g. D/2, D/2.
+_ = math.sqrt(1240**2 - 1000**2)
+STARTING_X, STARTING_Y = (1000, _)
 
 @dataclass
 class CarouselState:
@@ -508,7 +511,7 @@ def main() -> None:
         g_bbox += gcode_home_carousel(st_bbox)
         g_bbox += gcode_home_carousel(st_bbox)
 
-    cur_xy = (wall_cx, wall_cy)
+    cur_xy = (STARTING_X, STARTING_Y)
     pen = args.bbox_pen
 
     g_bbox += gcode_pen_select_ccw(pen, args.f_z, st_bbox)
@@ -526,7 +529,7 @@ def main() -> None:
     if args.return_after_finish:
         g_bbox.append("; --- return to start position after bbox dots ---")
         lines, cur_xy = move_xy_segmented(
-            cur_xy, (wall_cx, wall_cy), args_D, args.f_travel, max_step_mm=args.travel_step_mm
+            cur_xy, (STARTING_X, STARTING_Y), args_D, args.f_travel, max_step_mm=args.travel_step_mm
         )
         g_bbox += lines
 
@@ -539,7 +542,7 @@ def main() -> None:
     if args.home_carousel:
         g_draw += gcode_home_carousel(st_draw)
         g_draw += gcode_home_carousel(st_draw)
-    cur_xy = (wall_cx, wall_cy)
+    cur_xy = (STARTING_X, STARTING_Y)
 
     pen_down_block = 0
     for path, pen, svg_id in drawable:
@@ -596,7 +599,7 @@ def main() -> None:
     if args.return_after_finish:
         g_draw.append("; --- return to start position after drawing ---")
         lines, cur_xy = move_xy_segmented(
-            cur_xy, (wall_cx, wall_cy), args_D, args.f_travel, max_step_mm=args.travel_step_mm
+            cur_xy, (STARTING_X, STARTING_Y), args_D, args.f_travel, max_step_mm=args.travel_step_mm
         )
         g_draw += lines
 
@@ -606,6 +609,9 @@ def main() -> None:
     print(f"Wrote: {args.out_draw}")
     print(f"D_mm={args_D:.1f} scale={scale:.6f} fit_frac={args.fit_frac} step_mm={args.step_mm} travel_step_mm={args.travel_step_mm}")
     print(f"Color->pen map: {color_to_pen}")
+    bbox_w = wall_bbox_right - wall_bbox_left
+    bbox_h = wall_bbox_bottom - wall_bbox_top
+
     print(
         "bbox margins: "
         f"left={(wall_bbox_left / args_D) * 100:.2f}% ({wall_bbox_left:.1f}mm) "
@@ -613,6 +619,12 @@ def main() -> None:
         f"top={(wall_bbox_top / args_D) * 100:.2f}% ({wall_bbox_top:.1f}mm) "
         f"bottom={((args_D - wall_bbox_bottom) / args_D) * 100:.2f}% ({(args_D - wall_bbox_bottom):.1f}mm)"
     )
+    print(
+        "bbox size: "
+        f"width={bbox_w:.1f}mm ({(bbox_w / args_D) * 100:.2f}%) "
+        f"height={bbox_h:.1f}mm ({(bbox_h / args_D) * 100:.2f}%)"
+    )
+
     print(f"home_carousel={args.home_carousel} (disable with --no_home_carousel)")
     print(f"return_after_finish={args.return_after_finish} (disable with --no-return-after-finish)")
 
