@@ -31,10 +31,18 @@ from __future__ import annotations
 import argparse
 import math
 import re
-from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Tuple
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass, field
+from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
-from svgpathtools import Path, svg2paths2
+from svgpathtools import Path, parse_path
+from svgpathtools.svg_to_paths import (
+    ellipse2pathd,
+    line2pathd,
+    polygon2pathd,
+    polyline2pathd,
+    rect2pathd,
+)
 
 
 # Scribit default distance between nails
@@ -385,6 +393,138 @@ def build_argparser() -> argparse.ArgumentParser:
 
     return p
 
+RENDERABLE_TAGS = frozenset(
+    {"path", "polyline", "polygon", "line", "rect", "circle", "ellipse"}
+)
+
+# SVG presentation attributes that inherit from parent elements (subset relevant
+# to pen selection). `style` is handled separately because CSS rules override
+# presentation attributes.
+INHERITABLE_PRESENTATION_ATTRS = ("stroke", "fill", "stroke-width", "opacity")
+
+
+def _local_tag(tag: str) -> str:
+    """Strip the XML namespace prefix from a tag name (e.g. '{ns}path' -> 'path')."""
+    return tag.rsplit("}", 1)[-1]
+
+
+def _parse_style(style: Optional[str]) -> Dict[str, str]:
+    """Parse a CSS-style 'k:v;k:v' string into a dict."""
+    out: Dict[str, str] = {}
+    if not style:
+        return out
+    for piece in style.split(";"):
+        if ":" in piece:
+            k, v = piece.split(":", 1)
+            out[k.strip()] = v.strip()
+    return out
+
+
+def resolve_inherited_attrs(
+    el: ET.Element, inherited: Dict[str, str]
+) -> Dict[str, str]:
+    """Merge attributes inherited from ancestors with this element's own.
+
+    `style` overrides presentation attributes on the same element, per CSS rules.
+    """
+    resolved = dict(inherited)
+    for k in INHERITABLE_PRESENTATION_ATTRS:
+        v = el.get(k)
+        if v is not None:
+            resolved[k] = v
+    for k, v in _parse_style(el.get("style")).items():
+        resolved[k] = v
+    return resolved
+
+
+def _element_to_path_d(el: ET.Element) -> Optional[str]:
+    """Convert an SVG renderable element to a Path d-string, or None if unsupported/empty."""
+    tag = _local_tag(el.tag)
+    if tag == "path":
+        return el.get("d") or None
+    if tag == "polyline":
+        return polyline2pathd(el.attrib) or None
+    if tag == "polygon":
+        return polygon2pathd(el.attrib) or None
+    if tag == "line":
+        return line2pathd(el)
+    if tag == "rect":
+        return rect2pathd(el.attrib)
+    if tag in ("circle", "ellipse"):
+        return ellipse2pathd(el.attrib)
+    return None
+
+
+@dataclass
+class RenderableElement:
+    """An SVG renderable element with its inheritance-resolved presentation attrs."""
+    attrs: Dict[str, str]
+    d: str
+    svg_id: str
+
+
+def iter_renderable_elements(root: ET.Element) -> Iterable[RenderableElement]:
+    """Yield renderable SVG elements with inherited stroke/fill resolved.
+
+    Walks the tree top-down, accumulating inheritable presentation attrs from
+    each ancestor (so a `<polyline>` inside `<g stroke="red">` reports stroke="red").
+    """
+    counter = [0]
+
+    def walk(el: ET.Element, inherited: Dict[str, str]) -> Iterable[RenderableElement]:
+        resolved = resolve_inherited_attrs(el, inherited)
+        if _local_tag(el.tag) in RENDERABLE_TAGS:
+            counter[0] += 1
+            d = _element_to_path_d(el)
+            if d:
+                svg_id = el.get("id") or f"path_{counter[0]}"
+                yield RenderableElement(attrs=resolved, d=d, svg_id=svg_id)
+        for child in el:
+            yield from walk(child, resolved)
+
+    yield from walk(root, {})
+
+
+def effective_stroke(attrs: Dict[str, str]) -> Optional[str]:
+    """Decide which stroke color to draw an element with.
+
+    Returns:
+      - normalized color (e.g. "#ff2600") if the element should be drawn
+      - None if the element should be skipped (filled shape without a stroke)
+
+    Rules (preserved from the original implementation):
+      - Use stroke color if present and not "none".
+      - If stroke missing/none AND fill missing/none => assume black stroke.
+      - If fill is set (visible) but stroke missing/none => skip.
+    """
+    stroke = parse_color(attrs.get("stroke"))
+    if stroke is not None:
+        return stroke
+    fill = parse_color(attrs.get("fill"))
+    if fill is None:
+        return "#000000"
+    return None
+
+
+class PenAssigner:
+    """Maps stroke colors to pen slots (1..max_pens) in first-seen order.
+
+    Colors past `max_pens` fall back to `default_pen`.
+    """
+
+    def __init__(self, default_pen: int, max_pens: int = 4):
+        self.default_pen = default_pen
+        self.max_pens = max_pens
+        self.color_to_pen: Dict[str, int] = {}
+        self._next_pen = 1
+
+    def assign(self, color: str) -> int:
+        if color not in self.color_to_pen and self._next_pen <= self.max_pens:
+            self.color_to_pen[color] = self._next_pen
+            self._next_pen += 1
+        return self.color_to_pen.get(color, self.default_pen)
+
+
 def load_drawable_paths(svg_path: str, default_pen: int) -> Tuple[List[Tuple[Path, int, str]], Dict[str, int]]:
     """
     Returns:
@@ -395,35 +535,23 @@ def load_drawable_paths(svg_path: str, default_pen: int) -> Tuple[List[Tuple[Pat
       - If stroke missing AND fill missing/none => assume black stroke
       - If fill is set (visible) but stroke missing => skip (likely a filled shape)
       - Map first seen colors to pens 1..4; overflow uses default_pen
+      - Inheritance: stroke/fill are inherited from ancestor <g> elements, so a
+        <polyline> inside <g stroke="#ff2600"> draws with #ff2600.
     """
-    paths, attrs, _svg_attrs = svg2paths2(svg_path)
+    tree = ET.parse(svg_path)
+    root = tree.getroot()
 
-    color_to_pen: Dict[str, int] = {}
-    next_pen = 1
-
+    assigner = PenAssigner(default_pen=default_pen)
     drawable: List[Tuple[Path, int, str]] = []
 
-    for i, (p, a) in enumerate(zip(paths, attrs), start=1):
-
-        stroke = parse_color(a.get("stroke"))
-
+    for el in iter_renderable_elements(root):
+        stroke = effective_stroke(el.attrs)
         if stroke is None:
-            fill = parse_color(a.get("fill"))
-            if fill is None:
-                stroke = "#000000"
-            else:
-                continue
+            continue
+        pen = assigner.assign(stroke)
+        drawable.append((parse_path(el.d), pen, el.svg_id))
 
-        if stroke not in color_to_pen and next_pen <= 4:
-            color_to_pen[stroke] = next_pen
-            next_pen += 1
-
-        pen = color_to_pen.get(stroke, default_pen)
-
-        svg_id = a.get("id") or f"path_{i}"
-        drawable.append((p, pen, svg_id))
-
-    return drawable, color_to_pen
+    return drawable, assigner.color_to_pen
 
 def compute_svg_bbox(drawable: Iterable[Tuple[Path, int, str]]) -> Tuple[float, float, float, float]:
     xmin = ymin = float("inf")
