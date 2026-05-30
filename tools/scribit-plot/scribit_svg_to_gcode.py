@@ -337,6 +337,7 @@ class Args:
     default_pen: int
     home_carousel: bool
     return_after_finish: bool
+    gcode_comments: bool
     out_bbox: str
     out_draw: str
 
@@ -385,6 +386,10 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--no-return-after-finish", dest="return_after_finish",
                    action="store_false",
                    help="Do not return to starting position after finishing")
+
+    p.add_argument("--gcode-comments", dest="gcode_comments",
+                   action="store_true", default=False,
+                   help="Emit '; ---' comment lines in G-code output (off by default)")
 
     p.add_argument("--out_bbox", default="bbox_dots.gcode",
                    help="Output filename for bbox dots G-code")
@@ -568,6 +573,9 @@ def compute_svg_bbox(drawable: Iterable[Tuple[Path, int, str]]) -> Tuple[float, 
         raise SystemExit("No drawable paths.")
     return xmin, xmax, ymin, ymax
 
+def strip_gcode_comments(lines: List[str]) -> List[str]:
+    return [l for l in lines if not l.startswith(";")]
+
 def write_lines(path: str, lines: List[str]) -> None:
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
@@ -661,7 +669,7 @@ def main() -> None:
         )
         g_bbox += lines
 
-    write_lines(args.out_bbox, g_bbox)
+    write_lines(args.out_bbox, g_bbox if args.gcode_comments else strip_gcode_comments(g_bbox))
 
     # ---------- (2) drawing ----------
     g_draw: List[str] = []
@@ -731,7 +739,7 @@ def main() -> None:
         )
         g_draw += lines
 
-    write_lines(args.out_draw, g_draw)
+    write_lines(args.out_draw, g_draw if args.gcode_comments else strip_gcode_comments(g_draw))
 
     print(f"Wrote: {args.out_bbox}")
     print(f"Wrote: {args.out_draw}")
