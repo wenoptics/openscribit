@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -25,6 +26,8 @@ class DynamicGcodeStore:
 
 CACHE = Cache()
 DYNAMIC_GCODE = DynamicGcodeStore()
+
+_log = logging.getLogger("scribit_cmd.http_server")
 
 
 def send_response_body(handler: BaseHTTPRequestHandler, code: int, body: bytes, ctype: str) -> None:
@@ -80,8 +83,18 @@ class FileHandler(BaseHTTPRequestHandler):
     url_path: str
     downloaded: threading.Event
 
+    def setup(self) -> None:
+        super().setup()
+        _log.debug("connect   %s:%s", *self.client_address)
+
     def log_message(self, fmt: str, *args) -> None:
-        return
+        _log.debug(fmt, *args)
+
+    def finish(self) -> None:
+        super().finish()  # flushes wfile → kernel TCP buffer
+        if getattr(self, "_file_served", False):
+            self.downloaded.set()
+        _log.debug("close     %s:%s", *self.client_address)
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -103,7 +116,7 @@ class FileHandler(BaseHTTPRequestHandler):
                 "text/plain; charset=utf-8",
             )
 
-        self.downloaded.set()
+        self._file_served = True
         return send_response_body(self, 200, body, "text/plain; charset=utf-8")
 
 

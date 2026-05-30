@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import threading
 import time
@@ -150,8 +151,13 @@ def draw(
     keep_alive: Annotated[
         float,
         typer.Option("--keep-alive", min=0.0, help="Seconds to keep serving after the first successful download."),
-    ] = 5.0,
+    ] = 10.0,
 ) -> None:
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s.%(msecs)03d %(levelname)-5s %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
     validate_firmware_http_port(http_port)
 
     filename = quote(gcode_path.name)
