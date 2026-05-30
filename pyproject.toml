@@ -1,0 +1,20 @@
+[project]
+name = "scribit-x"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "scribit-cmd",
+    "scribit-plot",
+]
+
+[tool.uv.workspace]
+members = [
+    "tools/scribit-cmd",
+    "tools/scribit-plot",
+]
+
+[tool.uv.sources]
+scribit-cmd = { workspace = true }
+scribit-plot = { workspace = true }

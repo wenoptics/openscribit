@@ -10,6 +10,9 @@ dependencies = [
     "typer>=0.25.1",
 ]
 
+[project.scripts]
+sbcmd = "scribit_cmd.cli:main"
+
 [dependency-groups]
 dev = [
     "pytest>=8.0.0",

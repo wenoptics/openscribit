@@ -1,17 +1,13 @@
-"""Tests for the SVG color → pen mapping logic in scribit_svg_to_gcode."""
+"""Tests for the SVG color → pen mapping logic in scribit_plot.svg_loader."""
 from __future__ import annotations
 
-import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from textwrap import dedent
 
 import pytest
 
-# Make the script importable as a module.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from scribit_svg_to_gcode import (  # noqa: E402
+from scribit_plot.svg_loader import (
     PenAssigner,
     effective_stroke,
     iter_renderable_elements,
