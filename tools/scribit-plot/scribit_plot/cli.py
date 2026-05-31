@@ -30,6 +30,7 @@ from .geometry import (
     move_xy_segmented,
     wall_xy_to_lr_delta_g1,
 )
+from .path_optimizer import Stroke, optimize_strokes, total_travel
 from .runtime_estimator import estimate_runtime
 from .svg_loader import (
     compute_svg_bbox,
@@ -55,6 +56,7 @@ class Args:
     home_carousel: bool
     return_after_finish: bool
     gcode_comments: bool
+    optimize_path: bool
     out_bbox: str
     out_draw: str
     robot_cal: Optional[str]
@@ -106,6 +108,13 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--gcode-comments", dest="gcode_comments",
                    action="store_true", default=False,
                    help="Emit '; ---' comment lines in G-code output (off by default)")
+
+    p.add_argument("--optimize-path", dest="optimize_path",
+                   action="store_true", default=True,
+                   help="Reorder and flip subpaths to minimize pen-up travel (default: on)")
+    p.add_argument("--no-optimize-path", dest="optimize_path",
+                   action="store_false",
+                   help="Disable tool path optimization (preserve document order)")
 
     p.add_argument("--out_bbox", default="bbox_dots.gcode",
                    help="Output filename for bbox dots G-code")
@@ -247,14 +256,9 @@ def main() -> None:
         g_draw += gcode_home_carousel(st_draw)
     cur_xy = (STARTING_X, STARTING_Y)
 
-    pen_down_block = 0
+    all_strokes: List[Stroke] = []
     for path, pen, svg_id in drawable:
         subpaths = split_into_continuous_subpaths(path)
-        if not subpaths:
-            continue
-
-        g_draw += gcode_pen_select_ccw(pen, args.f_z, st_draw)
-
         for sp in subpaths:
             try:
                 length_svg = sp.length(error=1e-3)
@@ -268,34 +272,48 @@ def main() -> None:
             poly_wall = [mapper.map_uv(pt.real, pt.imag) for pt in pts]
             if len(poly_wall) < 2:
                 continue
+            all_strokes.append(Stroke(pen=pen, svg_id=svg_id, poly=poly_wall))
 
-            g_draw.append(
-                f"; --- travel (pen-up) to subpath start: "
-                f"({poly_wall[0][0]:.2f}, {poly_wall[0][1]:.2f}) mm ---"
+    travel_before = total_travel(all_strokes, cur_xy)
+    if args.optimize_path:
+        all_strokes = optimize_strokes(all_strokes, cur_xy)
+    travel_after = total_travel(all_strokes, cur_xy)
+
+    prev_pen: Optional[int] = None
+    pen_down_block = 0
+    for stroke in all_strokes:
+        if stroke.pen != prev_pen:
+            g_draw += gcode_pen_select_ccw(stroke.pen, args.f_z, st_draw)
+            prev_pen = stroke.pen
+
+        poly_wall = stroke.poly
+        g_draw.append(
+            f"; --- travel (pen-up) to subpath start: "
+            f"({poly_wall[0][0]:.2f}, {poly_wall[0][1]:.2f}) mm ---"
+        )
+        lines, cur_xy = move_xy_segmented(
+            cur_xy, poly_wall[0], args_D, args.f_travel,
+            max_step_mm=args.travel_step_mm, robot=robot_profile, wall=wall_profile,
+        )
+        g_draw += lines
+
+        pen_down_block += 1
+        g_draw.append(
+            f"; --- draw stroke #{pen_down_block:03d}: svg_id={stroke.svg_id} pen={stroke.pen} "
+            f"pts={len(poly_wall)} start=({poly_wall[0][0]:.2f},{poly_wall[0][1]:.2f}) "
+            f"end=({poly_wall[-1][0]:.2f},{poly_wall[-1][1]:.2f}) ---"
+        )
+
+        g_draw += gcode_pen_down()
+
+        for xy in poly_wall[1:]:
+            line, cur_xy = wall_xy_to_lr_delta_g1(
+                cur_xy, xy, args_D, args.f_draw,
+                robot=robot_profile, wall=wall_profile,
             )
-            lines, cur_xy = move_xy_segmented(
-                cur_xy, poly_wall[0], args_D, args.f_travel,
-                max_step_mm=args.travel_step_mm, robot=robot_profile, wall=wall_profile,
-            )
-            g_draw += lines
+            g_draw.append(line)
 
-            pen_down_block += 1
-            g_draw.append(
-                f"; --- draw stroke #{pen_down_block:03d}: svg_id={svg_id} pen={pen} "
-                f"pts={len(poly_wall)} start=({poly_wall[0][0]:.2f},{poly_wall[0][1]:.2f}) "
-                f"end=({poly_wall[-1][0]:.2f},{poly_wall[-1][1]:.2f}) ---"
-            )
-
-            g_draw += gcode_pen_down()
-
-            for xy in poly_wall[1:]:
-                line, cur_xy = wall_xy_to_lr_delta_g1(
-                    cur_xy, xy, args_D, args.f_draw,
-                    robot=robot_profile, wall=wall_profile,
-                )
-                g_draw.append(line)
-
-            g_draw += gcode_pen_up(pen, args.f_z, st_draw)
+        g_draw += gcode_pen_up(stroke.pen, args.f_z, st_draw)
 
     if args.return_after_finish:
         g_draw.append("; --- return to start position after drawing ---")
@@ -328,6 +346,14 @@ def main() -> None:
     )
     print(f"home_carousel={args.home_carousel} (disable with --no_home_carousel)")
     print(f"return_after_finish={args.return_after_finish} (disable with --no-return-after-finish)")
+    if args.optimize_path and travel_before > 0:
+        pct = (1.0 - travel_after / travel_before) * 100.0
+        print(
+            f"path optimization: ON  pen-up travel "
+            f"{travel_before:.0f}mm → {travel_after:.0f}mm ({pct:.1f}% reduction)"
+        )
+    else:
+        print(f"path optimization: OFF  pen-up travel {travel_after:.0f}mm")
 
     est = estimate_runtime(g_draw)
     print()
