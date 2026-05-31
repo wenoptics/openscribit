@@ -3,9 +3,15 @@ from __future__ import annotations
 
 import argparse
 import math
+import sys
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
+from .calibration_profile import (
+    check_robot_id_match,
+    load_robot_profile,
+    load_wall_profile,
+)
 from .config import D_MM_DEFAULT, PEN_SLOTS_Z, STARTING_X, STARTING_Y
 from .gcode import (
     CarouselState,
@@ -17,7 +23,13 @@ from .gcode import (
     gcode_pen_up,
     strip_comments,
 )
-from .geometry import SvgToWallMapper, move_xy_segmented, wall_xy_to_lr_delta_g1
+from .geometry import (
+    RobotProfile,
+    SvgToWallMapper,
+    WallProfile,
+    move_xy_segmented,
+    wall_xy_to_lr_delta_g1,
+)
 from .svg_loader import (
     compute_svg_bbox,
     load_drawable_paths,
@@ -44,6 +56,8 @@ class Args:
     gcode_comments: bool
     out_bbox: str
     out_draw: str
+    robot_cal: Optional[str]
+    wall_cal: Optional[str]
 
 
 def build_argparser() -> argparse.ArgumentParser:
@@ -97,6 +111,11 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--out_draw", default="drawing.gcode",
                    help="Output filename for drawing G-code")
 
+    p.add_argument("--robot-cal", default=None, metavar="FILE",
+                   help="Path to robot.json calibration profile (enables extended kinematics)")
+    p.add_argument("--wall-cal", default=None, metavar="FILE",
+                   help="Path to wall.json calibration profile (required together with --robot-cal)")
+
     return p
 
 
@@ -112,6 +131,9 @@ def main() -> None:
 
     d = vars(ns)
     d.pop("no_home_carousel", None)
+    # argparse uses hyphens → underscores for dest
+    d["robot_cal"] = d.pop("robot_cal", None)
+    d["wall_cal"] = d.pop("wall_cal", None)
     args = Args(**d)
 
     args_D = float(args.D_mm)
@@ -123,6 +145,26 @@ def main() -> None:
         raise SystemExit("--default_pen must be 1..4")
     if not (0.0 < args.fit_frac <= 1.5):
         raise SystemExit("--fit_frac must be in (0, 1.5]")
+
+    # --- load optional calibration profiles ---
+    robot_profile: Optional[RobotProfile] = None
+    wall_profile: Optional[WallProfile] = None
+
+    if args.robot_cal or args.wall_cal:
+        if not (args.robot_cal and args.wall_cal):
+            raise SystemExit("--robot-cal and --wall-cal must be provided together.")
+        try:
+            robot_profile = load_robot_profile(args.robot_cal)
+            wall_profile = load_wall_profile(args.wall_cal)
+        except (FileNotFoundError, KeyError, ValueError) as e:
+            raise SystemExit(f"Failed to load calibration profile: {e}")
+        check_robot_id_match(robot_profile, wall_profile)
+        # Use D_mm from the wall profile when calibration is active
+        args_D = wall_profile.D_mm
+        print(
+            f"Calibration active: robot={args.robot_cal} wall={args.wall_cal} "
+            f"D={args_D:.1f} h_pen={robot_profile.h_pen_mm:.1f} mm"
+        )
 
     wall_cx = args_D / 2.0
     wall_cy = args_D / 2.0
@@ -177,7 +219,8 @@ def main() -> None:
     for label, xy in zip(corner_labels, bbox_corners_wall):
         g_bbox.append(f"; --- travel to bbox corner: {label} ({xy[0]:.2f}, {xy[1]:.2f}) mm ---")
         lines, cur_xy = move_xy_segmented(
-            cur_xy, xy, args_D, args.f_travel, max_step_mm=args.travel_step_mm
+            cur_xy, xy, args_D, args.f_travel, max_step_mm=args.travel_step_mm,
+            robot=robot_profile, wall=wall_profile,
         )
         g_bbox += lines
         g_bbox += gcode_pen_down()
@@ -187,7 +230,8 @@ def main() -> None:
     if args.return_after_finish:
         g_bbox.append("; --- return to start position after bbox dots ---")
         lines, cur_xy = move_xy_segmented(
-            cur_xy, (STARTING_X, STARTING_Y), args_D, args.f_travel, max_step_mm=args.travel_step_mm
+            cur_xy, (STARTING_X, STARTING_Y), args_D, args.f_travel,
+            max_step_mm=args.travel_step_mm, robot=robot_profile, wall=wall_profile,
         )
         g_bbox += lines
 
@@ -229,7 +273,8 @@ def main() -> None:
                 f"({poly_wall[0][0]:.2f}, {poly_wall[0][1]:.2f}) mm ---"
             )
             lines, cur_xy = move_xy_segmented(
-                cur_xy, poly_wall[0], args_D, args.f_travel, max_step_mm=args.travel_step_mm
+                cur_xy, poly_wall[0], args_D, args.f_travel,
+                max_step_mm=args.travel_step_mm, robot=robot_profile, wall=wall_profile,
             )
             g_draw += lines
 
@@ -243,7 +288,10 @@ def main() -> None:
             g_draw += gcode_pen_down()
 
             for xy in poly_wall[1:]:
-                line, cur_xy = wall_xy_to_lr_delta_g1(cur_xy, xy, args_D, args.f_draw)
+                line, cur_xy = wall_xy_to_lr_delta_g1(
+                    cur_xy, xy, args_D, args.f_draw,
+                    robot=robot_profile, wall=wall_profile,
+                )
                 g_draw.append(line)
 
             g_draw += gcode_pen_up(pen, args.f_z, st_draw)
@@ -251,7 +299,8 @@ def main() -> None:
     if args.return_after_finish:
         g_draw.append("; --- return to start position after drawing ---")
         lines, cur_xy = move_xy_segmented(
-            cur_xy, (STARTING_X, STARTING_Y), args_D, args.f_travel, max_step_mm=args.travel_step_mm
+            cur_xy, (STARTING_X, STARTING_Y), args_D, args.f_travel,
+            max_step_mm=args.travel_step_mm, robot=robot_profile, wall=wall_profile,
         )
         g_draw += lines
 

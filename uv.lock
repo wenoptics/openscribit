@@ -291,6 +291,7 @@ name = "scribit-plot"
 version = "0.1.0"
 source = { editable = "tools/scribit-plot" }
 dependencies = [
+    { name = "scipy" },
     { name = "svgpathtools" },
 ]
 
@@ -300,7 +301,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "svgpathtools", specifier = ">=1.7.2" }]
+requires-dist = [
+    { name = "scipy", specifier = ">=1.11" },
+    { name = "svgpathtools", specifier = ">=1.7.2" },
+]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=9.0.3" }]
