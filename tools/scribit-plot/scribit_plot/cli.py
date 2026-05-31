@@ -40,6 +40,36 @@ from .svg_loader import (
 )
 
 
+def _hex_to_rgb(hex_color: str) -> Optional[tuple]:
+    s = hex_color.lstrip("#")
+    if len(s) != 6:
+        return None
+    try:
+        return int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
+    except ValueError:
+        return None
+
+
+def _print_color_pen_map(color_to_pen: dict) -> None:
+    if not color_to_pen:
+        print("Color->pen map: (empty)")
+        return
+    use_ansi = sys.stdout.isatty()
+    print("Color->pen map:")
+    for color, pen in color_to_pen.items():
+        rgb = _hex_to_rgb(color) if isinstance(color, str) and color.startswith("#") else None
+        if rgb and use_ansi:
+            r, g, b = rgb
+            fg = (0, 0, 0) if (0.299 * r + 0.587 * g + 0.114 * b) > 140 else (255, 255, 255)
+            swatch = f"\033[48;2;{r};{g};{b}m\033[38;2;{fg[0]};{fg[1]};{fg[2]}m  {color}  \033[0m"
+            print(f"  pen {pen}: {swatch}  rgb({r:3d}, {g:3d}, {b:3d})")
+        elif rgb:
+            r, g, b = rgb
+            print(f"  pen {pen}: {color}  rgb({r:3d}, {g:3d}, {b:3d})")
+        else:
+            print(f"  pen {pen}: {color}")
+
+
 @dataclass(frozen=True)
 class Args:
     svg: str
@@ -328,7 +358,7 @@ def main() -> None:
     print(f"Wrote: {args.out_bbox}")
     print(f"Wrote: {args.out_draw}")
     print(f"D_mm={args_D:.1f} scale={scale:.6f} fit_frac={args.fit_frac} step_mm={args.step_mm} travel_step_mm={args.travel_step_mm}")
-    print(f"Color->pen map: {color_to_pen}")
+    _print_color_pen_map(color_to_pen)
 
     bbox_w = wall_bbox_right - wall_bbox_left
     bbox_h = wall_bbox_bottom - wall_bbox_top

@@ -151,7 +151,7 @@ def draw(
     keep_alive: Annotated[
         float,
         typer.Option("--keep-alive", min=0.0, help="Seconds to keep serving after the first successful download."),
-    ] = 10.0,
+    ] = 5.0,
 ) -> None:
     logging.basicConfig(
         level=logging.DEBUG,
