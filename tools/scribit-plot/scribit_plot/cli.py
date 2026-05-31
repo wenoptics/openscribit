@@ -30,6 +30,7 @@ from .geometry import (
     move_xy_segmented,
     wall_xy_to_lr_delta_g1,
 )
+from .runtime_estimator import estimate_runtime
 from .svg_loader import (
     compute_svg_bbox,
     load_drawable_paths,
@@ -327,3 +328,7 @@ def main() -> None:
     )
     print(f"home_carousel={args.home_carousel} (disable with --no_home_carousel)")
     print(f"return_after_finish={args.return_after_finish} (disable with --no-return-after-finish)")
+
+    est = estimate_runtime(g_draw)
+    print()
+    print(est.summary())
