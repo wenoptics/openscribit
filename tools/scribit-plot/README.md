@@ -61,7 +61,9 @@ sbplot artwork.svg --robot-cal robot.json --wall-cal wall.json
 
 ## `sbcal` — Manual calibration workflow
 
-Guides you through a tape-measure calibration loop that fits the physical parameters of your robot and wall installation. Run this once per robot (full fit) and again whenever the robot moves to a new wall (fast wall-only fit).
+Fits the physical parameters of your robot and wall installation from tape-measure distances. Run once per robot (full fit) and again whenever the robot moves to a new wall (fast wall-only fit).
+
+The recommended workflow is **offline**: generate a template file, fill it in at your own pace with a tape measure, then run the fit. An interactive mode is also available if you prefer.
 
 ### Sub-commands
 
@@ -88,23 +90,55 @@ The grid spans ±0.45·D horizontally and 0.30–0.75·D vertically, covering th
 
 ---
 
-#### `sbcal fit-robot`
+#### `sbcal generate-measurements`
 
-**Full fit — use this the first time you calibrate a robot.**
-
-Interactively walks you through:
-1. Confirming the grid has been drawn on the wall
-2. Collecting ~12 tape-measure distances between cross centres
-3. Fitting all six parameters: `h_pen`, `k_L`, `k_R` (robot-intrinsic) and `D`, `dx_offset`, `dy_offset` (wall-extrinsic)
-4. Writing `robot.json` and `wall.json`
+Writes a `measurements.json.fillme` template pre-populated with all measurement pairs and their intended distances. Fill in the `actual_mm` fields with your tape-measure readings, then pass the file to `fit-robot` or `fit-wall`.
 
 ```
-sbcal fit-robot --intent grid5x5.json [--robot-out robot.json] [--wall-out wall.json]
+sbcal generate-measurements --intent grid5x5.json [--mode robot|wall] [--out FILE]
 ```
 
 | Option | Default | Description |
 |---|---|---|
 | `--intent` | *(required)* | Path to `grid5x5.json` |
+| `--mode` | robot | `robot` = full fit (17 pairs); `wall` = wall-only fit (6 pairs) |
+| `--out` | measurements.json.fillme | Output path for the template |
+
+The template looks like this:
+
+```json
+{
+  "$comment": "Fill in the `actual_mm` field. Leave null to skip. ...",
+  "measurements": {
+    "r0c0,r0c4": {
+      "description": "outer width — top-left to top-right",
+      "intended_mm": 1488.0,
+      "actual_mm": null,
+      "visualPattern": ["●○○○●", "○○○○○", "○○○○○", "○○○○○", "○○○○○"]
+    },
+    ...
+  }
+}
+```
+
+`visualPattern` shows which two crosses to measure (●) on the 5×5 grid. Measure centre-to-centre with a tape measure and write the result into `actual_mm`.
+
+---
+
+#### `sbcal fit-robot`
+
+**Full fit — use this the first time you calibrate a robot.**
+
+Fits all six parameters: `h_pen`, `k_L`, `k_R` (robot-intrinsic) and `D`, `dx_offset`, `dy_offset` (wall-extrinsic). Writes `robot.json` and `wall.json`.
+
+```
+sbcal fit-robot --intent grid5x5.json [--measurements FILE] [--robot-out robot.json] [--wall-out wall.json]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--intent` | *(required)* | Path to `grid5x5.json` |
+| `--measurements` | *(none)* | Path to filled-in `measurements.json.fillme` (omit for interactive mode) |
 | `--robot-out` | robot.json | Output path for robot profile |
 | `--wall-out` | wall.json | Output path for wall profile |
 
@@ -117,13 +151,14 @@ sbcal fit-robot --intent grid5x5.json [--robot-out robot.json] [--wall-out wall.
 Robot-intrinsic parameters (`h_pen`, `k_L`, `k_R`) are frozen from an existing `robot.json`. Only ~6 measurements needed to fit `D`, `dx_offset`, `dy_offset`.
 
 ```
-sbcal fit-wall --intent grid5x5.json --robot robot.json [--wall-out wall.json]
+sbcal fit-wall --intent grid5x5.json --robot robot.json [--measurements FILE] [--wall-out wall.json]
 ```
 
 | Option | Default | Description |
 |---|---|---|
 | `--intent` | *(required)* | Path to `grid5x5.json` |
 | `--robot` | *(required)* | Path to existing `robot.json` |
+| `--measurements` | *(none)* | Path to filled-in `measurements.json.fillme` (omit for interactive mode) |
 | `--wall-out` | wall.json | Output path for wall profile |
 
 ---
@@ -147,13 +182,18 @@ sbcal show --robot robot.json --wall wall.json
 sbcal generate-pattern --D_mm 1860
 
 # 2. Send grid5x5.gcode to the robot and let it draw the full grid.
-#    Use 'sbcmd draw' or your preferred method.
 
-# 3. With a tape measure, run the guided fit.
-#    The tool asks for ~12 distances between cross centres.
-sbcal fit-robot --intent grid5x5.json --robot-out robot.json --wall-out wall.json
+# 3. Generate a measurement template
+sbcal generate-measurements --intent grid5x5.json --mode robot
 
-# 4. Use calibration when converting SVG
+# 4. Open measurements.json.fillme and fill in the actual_mm fields
+#    using a tape measure. The visualPattern field shows which two
+#    crosses (●) to measure for each entry.
+
+# 5. Run the fit
+sbcal fit-robot --intent grid5x5.json --measurements measurements.json.fillme
+
+# 6. Use calibration when converting SVG
 sbplot artwork.svg --robot-cal robot.json --wall-cal wall.json
 ```
 
@@ -165,10 +205,15 @@ sbcal generate-pattern --D_mm 1860
 
 # 2. Draw the grid on the new wall
 
-# 3. Run the fast wall-only fit (~6 measurements)
-sbcal fit-wall --intent grid5x5.json --robot robot.json --wall-out wall_living_room.json
+# 3. Generate a wall-only measurement template (~6 measurements)
+sbcal generate-measurements --intent grid5x5.json --mode wall
 
-# 4. Plot with the new wall profile
+# 4. Fill in measurements.json.fillme, then fit
+sbcal fit-wall --intent grid5x5.json --robot robot.json \
+    --measurements measurements.json.fillme \
+    --wall-out wall_living_room.json
+
+# 5. Plot with the new wall profile
 sbplot artwork.svg --robot-cal robot.json --wall-cal wall_living_room.json
 ```
 

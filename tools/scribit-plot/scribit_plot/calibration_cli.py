@@ -2,21 +2,25 @@
 sbcal — Manual calibration CLI for Scribit drawing accuracy.
 
 Sub-commands:
-  generate-pattern   Write grid5x5.gcode + grid5x5.json
-  fit-robot          Guided workflow: full 9-param fit (robot-intrinsic + wall-extrinsic)
-  fit-wall           Guided workflow: fast 3-param wall-only fit (robot params frozen)
-  show               Print currently active robot / wall profiles
+  generate-pattern      Write grid5x5.gcode + grid5x5.json
+  generate-measurements Write a measurements.json.fillme template to fill in offline
+  fit-robot             Full 6-param fit (robot-intrinsic + wall-extrinsic)
+  fit-wall              Fast 3-param wall-only fit (robot params frozen)
+  show                  Print currently active robot / wall profiles
 
 Usage overview
 --------------
 First time (new robot):
-    sbcal generate-pattern --D_mm 1860 --out grid5x5.gcode
-    # print grid5x5.gcode on the robot, measure distances, then:
-    sbcal fit-robot --intent grid5x5.json --robot-out robot.json [--wall-out wall.json]
+    sbcal generate-pattern --D_mm 1860
+    # draw the grid on the wall, then generate a measurement template:
+    sbcal generate-measurements --intent grid5x5.json --out measurements.json.fillme
+    # fill in the `actual` fields in measurements.json.fillme, then fit:
+    sbcal fit-robot --intent grid5x5.json --measurements measurements.json.fillme
 
 New wall (same robot):
-    sbcal generate-pattern --D_mm 1860 --out grid5x5.gcode
-    sbcal fit-wall  --intent grid5x5.json --robot robot.json --wall-out wall.json
+    sbcal generate-pattern --D_mm 1860
+    sbcal generate-measurements --intent grid5x5.json --mode wall --out measurements.json.fillme
+    sbcal fit-wall --intent grid5x5.json --robot robot.json --measurements measurements.json.fillme
 """
 from __future__ import annotations
 
@@ -148,6 +152,147 @@ _EXTRA_MEASUREMENTS = [
     ("r1c1", "r3c1", "col 1 inner height"),
     ("r1c3", "r3c3", "col 3 inner height"),
 ]
+
+_WALL_MEASUREMENTS = [
+    ("r0c0", "r0c4", "outer width — top-left to top-right"),
+    ("r4c0", "r4c4", "outer width — bottom-left to bottom-right"),
+    ("r0c0", "r4c0", "outer height — top-left to bottom-left"),
+    ("r0c4", "r4c4", "outer height — top-right to bottom-right"),
+    ("r0c0", "r4c4", "diagonal — top-left to bottom-right"),
+    ("r0c4", "r4c0", "diagonal — top-right to bottom-left"),
+]
+
+
+# ---------------------------------------------------------------------------
+# Visual pattern helpers
+# ---------------------------------------------------------------------------
+
+_ROWS = 5
+_COLS = 5
+
+
+def _visual_pattern(label_a: str, label_b: str) -> list[str]:
+    """Return a list of strings showing a 5×5 grid with endpoints marked."""
+    def parse(label: str) -> tuple[int, int]:
+        r = int(label[1])
+        c = int(label[3])
+        return r, c
+
+    ra, ca = parse(label_a)
+    rb, cb = parse(label_b)
+    rows = []
+    for r in range(_ROWS):
+        row = ""
+        for c in range(_COLS):
+            if (r, c) == (ra, ca) or (r, c) == (rb, cb):
+                # row += "●"
+                row += "X"
+            else:
+                # row += "○"
+                row += "O"
+        rows.append(row)
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# generate-measurements command
+# ---------------------------------------------------------------------------
+
+def _build_measurements_template(
+    centres: Dict[str, Tuple[float, float]],
+    pairs: List[Tuple[str, str, str]],
+    mode: str,
+    n_recommended: int,
+) -> dict:
+    """Build the fillme template dict for the given measurement pairs."""
+    entries: Dict[str, dict] = {}
+    for label_a, label_b, description in pairs:
+        key = f"{label_a},{label_b}"
+        xa, ya = centres[label_a]
+        xb, yb = centres[label_b]
+        intended = math.hypot(xb - xa, yb - ya)
+        entries[key] = {
+            "description": description,
+            "intended_mm": round(intended, 1),
+            "actual_mm": None,
+            "visualPattern": _visual_pattern(label_a, label_b),
+        }
+
+    comment = (
+        f"Fill in the `actual_mm` field for each measurement. "
+        f"Leave null to skip. "
+        f"Recommended: at least {n_recommended} measurements for mode='{mode}'. "
+        f"Measure centre-to-centre of each + cross on the wall. Units: mm."
+    )
+    return {"$comment": comment, "measurements": entries}
+
+
+def cmd_generate_measurements(args: argparse.Namespace) -> None:
+    intent_path = Path(args.intent)
+    if not intent_path.exists():
+        print(f"ERROR: intent file not found: {intent_path}", file=sys.stderr)
+        sys.exit(1)
+
+    intent = json.loads(intent_path.read_text(encoding="utf-8"))
+    centres: Dict[str, Tuple[float, float]] = {
+        label: (float(v["x_mm"]), float(v["y_mm"]))
+        for label, v in intent["crosses"].items()
+    }
+
+    mode = args.mode
+    if mode == "robot":
+        pairs = _PRIORITY_MEASUREMENTS + _EXTRA_MEASUREMENTS
+        n_recommended = 12
+    else:
+        pairs = _WALL_MEASUREMENTS
+        n_recommended = 6
+
+    template = _build_measurements_template(centres, pairs, mode, n_recommended)
+
+    out_path = Path(args.out)
+    out_path.write_text(json.dumps(template, indent=2), encoding="utf-8")
+    print(f"Wrote measurement template: {out_path}")
+    print(f"Fill in the `actual_mm` fields, then run:")
+    if mode == "robot":
+        print(f"  sbcal fit-robot --intent {intent_path} --measurements {out_path}")
+    else:
+        print(f"  sbcal fit-wall --intent {intent_path} --robot robot.json --measurements {out_path}")
+
+
+# ---------------------------------------------------------------------------
+# Measurement loading helper
+# ---------------------------------------------------------------------------
+
+def _load_measurements_file(
+    path: Path,
+    centres: Dict[str, Tuple[float, float]],
+) -> List[Tuple[str, str, float]]:
+    """Load a filled-in measurements.json file and return the measurement list."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    raw = data.get("measurements", {})
+    results: List[Tuple[str, str, float]] = []
+    for key, entry in raw.items():
+        val = entry.get("actual_mm")
+        if val is None:
+            continue
+        parts = key.split(",")
+        if len(parts) != 2:
+            print(f"WARNING: skipping malformed key {key!r}", file=sys.stderr)
+            continue
+        label_a, label_b = parts
+        if label_a not in centres or label_b not in centres:
+            print(f"WARNING: unknown label in {key!r}, skipping", file=sys.stderr)
+            continue
+        try:
+            fval = float(val)
+        except (TypeError, ValueError):
+            print(f"WARNING: non-numeric actual_mm for {key!r}, skipping", file=sys.stderr)
+            continue
+        if fval <= 0:
+            print(f"WARNING: non-positive actual_mm for {key!r}, skipping", file=sys.stderr)
+            continue
+        results.append((label_a, label_b, fval))
+    return results
 
 
 def _ask_measurement(
@@ -316,9 +461,12 @@ def cmd_generate_pattern(args: argparse.Namespace) -> None:
     print("Next steps:")
     print("  1. Send this G-code file to your Scribit robot and let it draw the grid.")
     print("     (Use 'sbcmd draw' or your preferred method to send the file.)")
-    print("  2. Once drawn, run one of:")
-    print(f"       sbcal fit-robot --intent {out_json}   (first time / new robot)")
-    print(f"       sbcal fit-wall  --intent {out_json} --robot robot.json  (new wall)")
+    print("  2. Generate a measurement template to fill in offline:")
+    print(f"       sbcal generate-measurements --intent {out_json}            (full fit)")
+    print(f"       sbcal generate-measurements --intent {out_json} --mode wall  (wall-only fit)")
+    print("  3. Fill in the actual_mm fields in the template, then fit:")
+    print(f"       sbcal fit-robot --intent {out_json} --measurements measurements.json.fillme")
+    print(f"       sbcal fit-wall  --intent {out_json} --robot robot.json --measurements measurements.json.fillme")
 
 
 def _guided_fit(
@@ -359,17 +507,27 @@ def _guided_fit(
         print("Fits: D, dx_offset, dy_offset  (robot params frozen)")
         n_target = 6
     print("=" * 60)
-    print()
-    print("STEP 1 — Print the calibration grid")
-    print()
-    print(f"  The intent file describes a 5×5 grid of + crosses drawn on the wall.")
-    print(f"  Make sure you have already sent the matching .gcode file to the robot")
-    print(f"  and it has finished drawing.")
-    print()
-    input("  Press Enter once the robot has finished drawing the grid ... ")
 
-    # --- collect measurements ---
-    measurements = _collect_measurements(centres, n_target, extra_ok=(fit_mode == "robot"))
+    # --- collect measurements: from file or interactively ---
+    measurements_path: Optional[str] = getattr(args, "measurements", None)
+    if measurements_path:
+        measurements = _load_measurements_file(Path(measurements_path), centres)
+        print(f"\nLoaded {len(measurements)} measurements from {measurements_path}")
+        if len(measurements) < 3:
+            print("ERROR: fewer than 3 valid measurements in file. Aborting.", file=sys.stderr)
+            sys.exit(1)
+        if len(measurements) < n_target:
+            print(f"WARNING: only {len(measurements)} measurements; {n_target} recommended.")
+    else:
+        print()
+        print("STEP 1 — Print the calibration grid")
+        print()
+        print(f"  The intent file describes a 5×5 grid of + crosses drawn on the wall.")
+        print(f"  Make sure you have already sent the matching .gcode file to the robot")
+        print(f"  and it has finished drawing.")
+        print()
+        input("  Press Enter once the robot has finished drawing the grid ... ")
+        measurements = _collect_measurements(centres, n_target, extra_ok=(fit_mode == "robot"))
 
     print()
     print(f"Collected {len(measurements)} measurements. Running fit ...")
@@ -471,6 +629,20 @@ def build_argparser() -> argparse.ArgumentParser:
     )
     sub = p.add_subparsers(dest="command", required=True)
 
+    # --- generate-measurements ---
+    gm = sub.add_parser(
+        "generate-measurements",
+        help="Write a measurements.json.fillme template to fill in offline.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    gm.add_argument("--intent", required=True,
+                    help="Path to grid5x5.json (intended cross positions)")
+    gm.add_argument("--mode", choices=["robot", "wall"], default="robot",
+                    help="'robot' includes extra pairs for a full fit; 'wall' uses fewer pairs")
+    gm.add_argument("--out", default="measurements.json.fillme",
+                    help="Output path for the measurement template")
+    gm.set_defaults(func=cmd_generate_measurements)
+
     # --- generate-pattern ---
     gp = sub.add_parser(
         "generate-pattern",
@@ -500,6 +672,8 @@ def build_argparser() -> argparse.ArgumentParser:
     )
     fr.add_argument("--intent", required=True,
                     help="Path to grid5x5.json (intended cross positions)")
+    fr.add_argument("--measurements", default=None, metavar="FILE",
+                    help="Path to filled-in measurements.json (skips interactive collection)")
     fr.add_argument("--robot-out", default="robot.json",
                     help="Output path for robot calibration profile")
     fr.add_argument("--wall-out", default="wall.json",
@@ -516,6 +690,8 @@ def build_argparser() -> argparse.ArgumentParser:
                     help="Path to grid5x5.json (intended cross positions)")
     fw.add_argument("--robot", required=True,
                     help="Path to existing robot.json profile (frozen during fit)")
+    fw.add_argument("--measurements", default=None, metavar="FILE",
+                    help="Path to filled-in measurements.json (skips interactive collection)")
     fw.add_argument("--wall-out", default="wall.json",
                     help="Output path for wall calibration profile")
     fw.set_defaults(func=cmd_fit_wall)
