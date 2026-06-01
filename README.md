@@ -34,6 +34,11 @@ cp -r ExtraFile/StepperDriver Firmware/ScribitESP/
 #### New Wi-Fi Configuration
 - Connect to the `ScribIt-AP` AP.
 - Send a POST request to `http://192.168.240.1:8888`. The body must contain a JSON formatted as follows: `{ "ssid": "networkSSID", "password": "networkPsk" }`.
+  e.g. using `curl`:
+  ```bash
+  curl -X POST -H "Content-Type: application/json" -d '{"ssid": "my_wifi_ssid", "password": "my_wifi_password"}' http://192.168.240.1:8888/
+  ```
+
 - The device blinks faster and responds:
   - **200**: The request is correct. The body contains a JSON formatted as follows: `{"ID":"id_device"}`.
   - **400**: Error in the request. The body contains details about the error in the format: `{"error":"error", "ID":"id_device"}`.

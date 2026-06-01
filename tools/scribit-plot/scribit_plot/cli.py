@@ -115,9 +115,9 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--travel_step_mm", type=float, default=5.0,
                    help="Pen-up max step size in wall mm when repositioning")
 
-    p.add_argument("--f_travel", type=int, default=600, help="Feed rate for pen-up travel moves")
-    p.add_argument("--f_draw", type=int, default=300, help="Feed rate for pen-down drawing moves")
-    p.add_argument("--f_z", type=int, default=600, help="Feed rate for Z (carousel) moves")
+    p.add_argument("--f_travel", type=int, default=1000, help="Feed rate for pen-up travel moves")
+    p.add_argument("--f_draw", type=int, default=600, help="Feed rate for pen-down drawing moves")
+    p.add_argument("--f_z", type=int, default=1500, help="Feed rate for Z (carousel) moves")
 
     p.add_argument("--dot_dwell_s", type=float, default=0.20,
                    help="Dwell time (seconds) for bbox corner dots")

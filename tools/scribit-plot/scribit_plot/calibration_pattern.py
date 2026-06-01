@@ -1,5 +1,5 @@
 """
-Generate the 5×5 calibration grid:
+Generate the 5x5 calibration grid:
   - grid5x5.gcode  — draws 25 small + crosses on the wall
   - grid5x5.json   — intended wall XY of each cross centre
 """
@@ -27,9 +27,8 @@ from .geometry import move_xy_segmented, wall_xy_to_lr_delta_g1
 CROSS_HALF = 10.0
 
 # Grid layout: row/column fractions of D along horizontal and vertical axes.
-# Spans ±0.45·D horizontally (centre at 0.5·D) and 0.30–0.75·D vertically.
-_ROW_FRACS = (0.30, 0.39, 0.525, 0.61, 0.75)
-_COL_FRACS = (0.05, 0.275, 0.50, 0.725, 0.95)
+_ROW_FRACS = (0.35, 0.42, 0.50, 0.58, 0.65)
+_COL_FRACS = (0.12, 0.275, 0.50, 0.725, 0.88)
 
 
 def grid_cross_centres(D_mm: float) -> Dict[str, Tuple[float, float]]:
@@ -133,9 +132,10 @@ def generate_pattern(
 
     cur_xy: Tuple[float, float] = (STARTING_X, STARTING_Y)
 
-    # Iterate row-major so the robot sweeps top-to-bottom, left-to-right
+    # Boustrophedon (snake) traversal: even rows left-to-right, odd rows right-to-left
     for ri in range(5):
-        for ci in range(5):
+        col_indices = range(5) if ri % 2 == 0 else range(4, -1, -1)
+        for ci in col_indices:
             label = f"r{ri}c{ci}"
             cross_lines, cur_xy = _cross_gcode(
                 centre=centres[label],

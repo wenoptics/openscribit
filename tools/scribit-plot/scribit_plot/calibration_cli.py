@@ -485,9 +485,9 @@ def build_argparser() -> argparse.ArgumentParser:
                     help="Output JSON filename (default: same as --out with .json)")
     gp.add_argument("--pen", type=int, default=1,
                     help="Pen slot (1-4) to use for the pattern")
-    gp.add_argument("--f_travel", type=int, default=600, help="Travel feed rate")
-    gp.add_argument("--f_draw", type=int, default=300, help="Draw feed rate")
-    gp.add_argument("--f_z", type=int, default=600, help="Carousel feed rate")
+    gp.add_argument("--f_travel", type=int, default=1400, help="Travel feed rate")
+    gp.add_argument("--f_draw", type=int, default=900, help="Draw feed rate")
+    gp.add_argument("--f_z", type=int, default=2000, help="Carousel feed rate")
     gp.add_argument("--gcode-comments", action="store_true",
                     help="Include comments in G-code output")
     gp.set_defaults(func=cmd_generate_pattern)
