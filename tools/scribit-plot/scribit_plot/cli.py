@@ -87,6 +87,7 @@ class Args:
     return_after_finish: bool
     gcode_comments: bool
     optimize_path: bool
+    connect_eps_mm: float
     out_bbox: str
     out_draw: str
     robot_cal: Optional[str]
@@ -145,6 +146,11 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--no-optimize-path", dest="optimize_path",
                    action="store_false",
                    help="Disable tool path optimization (preserve document order)")
+
+    p.add_argument("--connect-eps-mm", dest="connect_eps_mm", type=float, default=1e-3,
+                   help="Two consecutive same-pen strokes within this distance "
+                        "(wall mm) are chained without lifting the pen. "
+                        "Set to 0 to always lift between strokes")
 
     p.add_argument("--out_bbox", default="bbox_dots.gcode",
                    help="Output filename for bbox dots G-code")
@@ -309,32 +315,57 @@ def main() -> None:
         all_strokes = optimize_strokes(all_strokes, cur_xy)
     travel_after = total_travel(all_strokes, cur_xy)
 
+    connect_eps_sq = args.connect_eps_mm * args.connect_eps_mm
     prev_pen: Optional[int] = None
+    pen_is_down = False
     pen_down_block = 0
+    chained_count = 0
     for stroke in all_strokes:
-        if stroke.pen != prev_pen:
-            g_draw += gcode_pen_select_ccw(stroke.pen, args.f_z, st_draw)
-            prev_pen = stroke.pen
-
         poly_wall = stroke.poly
-        g_draw.append(
-            f"; --- travel (pen-up) to subpath start: "
-            f"({poly_wall[0][0]:.2f}, {poly_wall[0][1]:.2f}) mm ---"
-        )
-        lines, cur_xy = move_xy_segmented(
-            cur_xy, poly_wall[0], args_D, args.f_travel,
-            max_step_mm=args.travel_step_mm, robot=robot_profile, wall=wall_profile,
-        )
-        g_draw += lines
 
-        pen_down_block += 1
-        g_draw.append(
-            f"; --- draw stroke #{pen_down_block:03d}: svg_id={stroke.svg_id} pen={stroke.pen} "
-            f"pts={len(poly_wall)} start=({poly_wall[0][0]:.2f},{poly_wall[0][1]:.2f}) "
-            f"end=({poly_wall[-1][0]:.2f},{poly_wall[-1][1]:.2f}) ---"
-        )
+        # Chain into the previous stroke when same pen + touching endpoints.
+        if pen_is_down and stroke.pen == prev_pen:
+            dx = poly_wall[0][0] - cur_xy[0]
+            dy = poly_wall[0][1] - cur_xy[1]
+            chains = (dx * dx + dy * dy) <= connect_eps_sq
+        else:
+            chains = False
 
-        g_draw += gcode_pen_down()
+        if chains:
+            pen_down_block += 1
+            chained_count += 1
+            g_draw.append(
+                f"; --- chain stroke #{pen_down_block:03d}: svg_id={stroke.svg_id} pen={stroke.pen} "
+                f"pts={len(poly_wall)} (continuing without pen lift) ---"
+            )
+        else:
+            if pen_is_down:
+                g_draw += gcode_pen_up(prev_pen, args.f_z, st_draw)
+                pen_is_down = False
+
+            if stroke.pen != prev_pen:
+                g_draw += gcode_pen_select_ccw(stroke.pen, args.f_z, st_draw)
+                prev_pen = stroke.pen
+
+            g_draw.append(
+                f"; --- travel (pen-up) to subpath start: "
+                f"({poly_wall[0][0]:.2f}, {poly_wall[0][1]:.2f}) mm ---"
+            )
+            lines, cur_xy = move_xy_segmented(
+                cur_xy, poly_wall[0], args_D, args.f_travel,
+                max_step_mm=args.travel_step_mm, robot=robot_profile, wall=wall_profile,
+            )
+            g_draw += lines
+
+            pen_down_block += 1
+            g_draw.append(
+                f"; --- draw stroke #{pen_down_block:03d}: svg_id={stroke.svg_id} pen={stroke.pen} "
+                f"pts={len(poly_wall)} start=({poly_wall[0][0]:.2f},{poly_wall[0][1]:.2f}) "
+                f"end=({poly_wall[-1][0]:.2f},{poly_wall[-1][1]:.2f}) ---"
+            )
+
+            g_draw += gcode_pen_down()
+            pen_is_down = True
 
         for xy in poly_wall[1:]:
             line, cur_xy = wall_xy_to_lr_delta_g1(
@@ -343,7 +374,9 @@ def main() -> None:
             )
             g_draw.append(line)
 
-        g_draw += gcode_pen_up(stroke.pen, args.f_z, st_draw)
+    if pen_is_down and prev_pen is not None:
+        g_draw += gcode_pen_up(prev_pen, args.f_z, st_draw)
+        pen_is_down = False
 
     if args.return_after_finish:
         g_draw.append("; --- return to start position after drawing ---")
@@ -384,6 +417,12 @@ def main() -> None:
         )
     else:
         print(f"path optimization: OFF  pen-up travel {travel_after:.0f}mm")
+    if all_strokes:
+        print(
+            f"stroke chaining (eps={args.connect_eps_mm}mm): "
+            f"{chained_count}/{len(all_strokes) - 1} junctions chained, "
+            f"saving that many pen-up/pen-down cycles"
+        )
 
     est = estimate_runtime(g_draw)
     print()

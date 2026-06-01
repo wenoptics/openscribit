@@ -119,3 +119,31 @@ def total_travel(strokes: Sequence[Stroke], start_xy: XY) -> float:
         total += math.hypot(dx, dy)
         cur = s.end
     return total
+
+
+def count_pen_lifts(
+    strokes: Sequence[Stroke],
+    connect_eps_mm: float = 1e-3,
+) -> int:
+    """Number of pen-down events required to draw `strokes` in order.
+
+    Two consecutive strokes are chained (single pen-down) when they share the
+    same pen and the previous end meets the next start within `connect_eps_mm`.
+    Lower bound = number of distinct pen-runs; equals len(strokes) when nothing
+    chains.
+    """
+    if not strokes:
+        return 0
+    eps_sq = connect_eps_mm * connect_eps_mm
+    lifts = 1
+    prev = strokes[0]
+    for cur in strokes[1:]:
+        if cur.pen != prev.pen:
+            lifts += 1
+        else:
+            dx = cur.start[0] - prev.end[0]
+            dy = cur.start[1] - prev.end[1]
+            if dx * dx + dy * dy > eps_sq:
+                lifts += 1
+        prev = cur
+    return lifts

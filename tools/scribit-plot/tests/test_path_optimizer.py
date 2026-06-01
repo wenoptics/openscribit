@@ -5,6 +5,7 @@ import pytest
 
 from scribit_plot.path_optimizer import (
     Stroke,
+    count_pen_lifts,
     optimize_strokes,
     order_strokes_nearest_neighbor,
     total_travel,
@@ -194,3 +195,114 @@ class TestOptimizeStrokes:
         out = optimize_strokes(strokes, (0, 0))
         assert len(out) == 4
         assert {s.svg_id for s in out} == {"a", "b", "c", "d"}
+
+
+# ----------------------------
+# count_pen_lifts (stroke chaining)
+# ----------------------------
+
+class TestCountPenLifts:
+    def test_empty_is_zero(self):
+        assert count_pen_lifts([]) == 0
+
+    def test_single_stroke_is_one_lift(self):
+        assert count_pen_lifts([_stroke(1, (0, 0), (1, 0))]) == 1
+
+    def test_disjoint_same_pen_strokes_each_lift(self):
+        s1 = _stroke(1, (0, 0), (1, 0))
+        s2 = _stroke(1, (10, 0), (11, 0))  # gap of 9mm — far above eps
+        assert count_pen_lifts([s1, s2]) == 2
+
+    def test_touching_same_pen_strokes_chain(self):
+        # s1 ends at (1, 0); s2 starts at (1, 0) → chain into one pen-down.
+        s1 = _stroke(1, (0, 0), (1, 0))
+        s2 = _stroke(1, (1, 0), (2, 0))
+        assert count_pen_lifts([s1, s2]) == 1
+
+    def test_touching_within_eps_chains(self):
+        # 0.5e-3mm gap with default eps=1e-3 → still chains.
+        s1 = _stroke(1, (0, 0), (1.0, 0))
+        s2 = _stroke(1, (1.0005, 0), (2, 0))
+        assert count_pen_lifts([s1, s2]) == 1
+
+    def test_outside_eps_does_not_chain(self):
+        # 2e-3mm gap with default eps=1e-3 → lift required.
+        s1 = _stroke(1, (0, 0), (1.0, 0))
+        s2 = _stroke(1, (1.002, 0), (2, 0))
+        assert count_pen_lifts([s1, s2]) == 2
+
+    def test_pen_change_always_lifts_even_if_touching(self):
+        s1 = _stroke(1, (0, 0), (1, 0))
+        s2 = _stroke(2, (1, 0), (2, 0))  # touches, but different pen
+        assert count_pen_lifts([s1, s2]) == 2
+
+    def test_pen_change_lifts_even_at_exactly_same_xy(self):
+        # Both strokes start/end at exactly the same point but use different pens.
+        # The pen switch is non-optional regardless of how close the endpoints are.
+        s1 = _stroke(1, (10.0, 5.0), (20.0, 5.0))
+        s2 = _stroke(2, (20.0, 5.0), (30.0, 5.0))
+        assert count_pen_lifts([s1, s2]) == 2
+
+    def test_pen_change_lifts_with_very_generous_eps(self):
+        # Even with a meter of eps, a color change must still force a lift.
+        s1 = _stroke(1, (0, 0), (1, 0))
+        s2 = _stroke(2, (1, 0), (2, 0))
+        assert count_pen_lifts([s1, s2], connect_eps_mm=1000.0) == 2
+
+    def test_alternating_pens_at_shared_point_each_lift(self):
+        # Four strokes meeting at the same XY, colors alternate 1,2,1,2.
+        # Every transition crosses a color boundary → 4 lifts.
+        strokes = [
+            _stroke(1, (5, 5), (0, 5)),
+            _stroke(2, (0, 5), (5, 0)),
+            _stroke(1, (5, 0), (10, 5)),
+            _stroke(2, (10, 5), (5, 10)),
+        ]
+        # Note: with the optimizer NOT applied, color alternates every stroke.
+        assert count_pen_lifts(strokes) == 4
+
+    def test_mixed_chain_then_color_change(self):
+        # Two pen-1 strokes chain into one pen-down; pen-2 stroke after them
+        # touches the chain endpoint but must still trigger a separate pen-down.
+        strokes = [
+            _stroke(1, (0, 0), (1, 0)),
+            _stroke(1, (1, 0), (2, 0)),  # chains with prev (same pen, touching)
+            _stroke(2, (2, 0), (3, 0)),  # touches but pen change → new pen-down
+        ]
+        assert count_pen_lifts(strokes) == 2
+
+    def test_eps_zero_disables_chaining(self):
+        # Exact match would still chain with eps=0, but anything else won't.
+        s1 = _stroke(1, (0, 0), (1.0, 0))
+        s2 = _stroke(1, (1.0000001, 0), (2, 0))  # sub-micron gap
+        assert count_pen_lifts([s1, s2], connect_eps_mm=0.0) == 2
+
+    def test_long_chain_collapses_to_one(self):
+        # Five strokes daisy-chained head-to-tail → single pen-down.
+        strokes = [
+            _stroke(1, (0, 0), (1, 0)),
+            _stroke(1, (1, 0), (2, 0)),
+            _stroke(1, (2, 0), (3, 0)),
+            _stroke(1, (3, 0), (4, 0)),
+            _stroke(1, (4, 0), (5, 0)),
+        ]
+        assert count_pen_lifts(strokes) == 1
+
+    def test_chain_broken_by_gap_in_middle(self):
+        # a→b touches, b→c gap, c→d touches: 2 chains → 2 lifts.
+        strokes = [
+            _stroke(1, (0, 0), (1, 0)),
+            _stroke(1, (1, 0), (2, 0)),
+            _stroke(1, (10, 0), (11, 0)),
+            _stroke(1, (11, 0), (12, 0)),
+        ]
+        assert count_pen_lifts(strokes) == 2
+
+    def test_optimizer_output_can_produce_chains(self):
+        # Two strokes that share an endpoint, fed in reverse order.
+        # The optimizer should reorder (and possibly reverse) them so they chain.
+        s1 = _stroke(1, (5, 0), (10, 0), svg_id="far")
+        s2 = _stroke(1, (5, 0), (0, 0), svg_id="near")  # ends at (0,0) → start near origin
+        out = optimize_strokes([s1, s2], (0, 0))
+        # After optimization both strokes should be drawn back-to-back with no lift.
+        assert count_pen_lifts(out) == 1
