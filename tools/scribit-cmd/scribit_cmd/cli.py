@@ -147,7 +147,7 @@ def draw(
     wait_download: Annotated[
         float,
         typer.Option("--wait-download", min=0.0, help="Seconds to wait for the robot to request the GCODE file."),
-    ] = 60.0,
+    ] = 300.0,
     keep_alive: Annotated[
         float,
         typer.Option("--keep-alive", min=0.0, help="Seconds to keep serving after the first successful download."),

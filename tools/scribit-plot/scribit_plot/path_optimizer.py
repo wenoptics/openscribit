@@ -53,6 +53,30 @@ def order_strokes_nearest_neighbor(
     Each iteration: from the current XY, pick the unvisited stroke whose
     nearer endpoint (start or end) is closest, and orient it so we begin at
     that endpoint. O(n²) — fine for typical SVGs.
+
+    KNOWN LIMITATION — chain-breaking trap:
+    Reversing a stroke produces a locally cheaper first step but can break a
+    zero-cost chain with the following stroke and leave the pen stranded far
+    from it, making the *total* travel longer.
+
+    Example (robot starts near (1000, 735)):
+        A: (279, 800) → (930, 930)
+        B: (930, 930) → (1581, 1060)   ← shares A's endpoint, would chain for free
+
+        NN sees A.end at 207 mm (cheaper than A.start at 724 mm) → reverses A.
+        After drawing A reversed, pen is at (279, 800), 664 mm from B.start.
+        Total travel: 207 + 664 = 871 mm, and the chain is broken (extra pen lift).
+
+        Taking A forward costs 724 mm but exits at (930, 930) = B.start,
+        so the chain fires and B costs 0 mm. Total: 724 mm — shorter overall,
+        and one fewer pen-lift cycle.
+
+    This failure is most visible on small inputs (< ~10 strokes) where the
+    algorithm has no room to recover. On large SVGs (hundreds of strokes) the
+    effect washes out and 90%+ travel reduction is still typical.
+
+    To improve: add one-step lookahead (score current + next move cost, O(n³)),
+    or run a 2-opt post-processing pass over the result.
     """
     remaining = list(strokes)
     ordered: List[Stroke] = []
