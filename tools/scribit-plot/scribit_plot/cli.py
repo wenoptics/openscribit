@@ -83,6 +83,7 @@ class Args:
     dot_dwell_s: float
     bbox_pen: int
     default_pen: int
+    pen_assignment_order: Optional[List[int]]
     home_carousel: bool
     return_after_finish: bool
     gcode_comments: bool
@@ -125,6 +126,11 @@ def build_argparser() -> argparse.ArgumentParser:
                    help="Pen slot (1..4) for bbox dots")
     p.add_argument("--default_pen", type=int, default=1,
                    help="Fallback pen slot (1..4) if pen mapping overflows")
+    p.add_argument("--pen-assignment-order", dest="pen_assignment_order",
+                   default=None, metavar="SLOTS",
+                   help="Comma-separated pen slots assigned to SVG colors in first-occurrence "
+                        "order (e.g. '3,1,2,4,2,1,2,3'). Colors beyond the list fall back to "
+                        "--default_pen. Overrides automatic 1,2,3,4 assignment.")
 
     p.add_argument("--no_home_carousel", action="store_true",
                    help="Do NOT emit G77 + G92 Z-56 at file start (not recommended)")
@@ -180,6 +186,15 @@ def main() -> None:
     # argparse uses hyphens → underscores for dest
     d["robot_cal"] = d.pop("robot_cal", None)
     d["wall_cal"] = d.pop("wall_cal", None)
+
+    # Parse --pen-assignment-order "3,1,2,4" → [3, 1, 2, 4]
+    raw_order = d.get("pen_assignment_order")
+    if raw_order is not None:
+        try:
+            d["pen_assignment_order"] = [int(x) for x in raw_order.split(",")]
+        except ValueError:
+            raise SystemExit("--pen-assignment-order must be comma-separated integers, e.g. '3,1,2,4'")
+
     args = Args(**d)
 
     args_D = float(args.D_mm)
@@ -191,6 +206,10 @@ def main() -> None:
         raise SystemExit("--default_pen must be 1..4")
     if not (0.0 < args.fit_frac <= 1.5):
         raise SystemExit("--fit_frac must be in (0, 1.5]")
+    if args.pen_assignment_order is not None:
+        invalid = [p for p in args.pen_assignment_order if p not in PEN_SLOTS_Z]
+        if invalid:
+            raise SystemExit(f"--pen-assignment-order contains invalid pen slots {invalid}; must be 1..4")
 
     # --- load optional calibration profiles ---
     robot_profile: Optional[RobotProfile] = None
@@ -215,7 +234,9 @@ def main() -> None:
     wall_cx = args_D / 2.0
     wall_cy = args_D / 2.0
 
-    drawable, color_to_pen = load_drawable_paths(args.svg, args.default_pen)
+    drawable, color_to_pen = load_drawable_paths(
+        args.svg, args.default_pen, pen_sequence=args.pen_assignment_order
+    )
     if not drawable:
         raise SystemExit("No drawable stroked paths found (stroke != none).")
 

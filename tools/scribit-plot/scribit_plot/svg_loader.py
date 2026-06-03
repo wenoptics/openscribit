@@ -140,21 +140,37 @@ def effective_stroke(attrs: Dict[str, str]) -> Optional[str]:
 
 
 class PenAssigner:
-    """Maps stroke colors to pen slots (1..max_pens) in first-seen order.
+    """Maps stroke colors to pen slots in first-seen order.
 
-    Colors beyond max_pens fall back to default_pen.
+    If *pen_sequence* is given (e.g. [3,1,2,4,2,1]) each newly-seen color is
+    assigned the next pen from that list.  Colors beyond the list fall back to
+    default_pen.  Without a sequence the legacy behaviour (1,2,3,…,max_pens)
+    is used.
     """
 
-    def __init__(self, default_pen: int, max_pens: int = 4):
+    def __init__(
+        self,
+        default_pen: int,
+        max_pens: int = 4,
+        pen_sequence: Optional[List[int]] = None,
+    ):
         self.default_pen = default_pen
         self.max_pens = max_pens
+        self._sequence: Optional[List[int]] = pen_sequence
         self.color_to_pen: Dict[str, int] = {}
-        self._next_pen = 1
+        self._next_idx = 0  # index into _sequence when a sequence is provided
+        self._next_pen = 1  # legacy counter used when no sequence is given
 
     def assign(self, color: str) -> int:
-        if color not in self.color_to_pen and self._next_pen <= self.max_pens:
-            self.color_to_pen[color] = self._next_pen
-            self._next_pen += 1
+        if color not in self.color_to_pen:
+            if self._sequence is not None:
+                if self._next_idx < len(self._sequence):
+                    self.color_to_pen[color] = self._sequence[self._next_idx]
+                    self._next_idx += 1
+                # else: fall through to default below
+            elif self._next_pen <= self.max_pens:
+                self.color_to_pen[color] = self._next_pen
+                self._next_pen += 1
         return self.color_to_pen.get(color, self.default_pen)
 
 
@@ -209,13 +225,15 @@ def sample_path_uniform_t(path: Path, n: int) -> List[complex]:
 
 
 def load_drawable_paths(
-    svg_path: str, default_pen: int
+    svg_path: str,
+    default_pen: int,
+    pen_sequence: Optional[List[int]] = None,
 ) -> Tuple[List[Tuple[Path, int, str]], Dict[str, int]]:
     """Parse SVG and return list of (Path, pen_id, svg_id) and the color→pen map."""
     tree = ET.parse(svg_path)
     root = tree.getroot()
 
-    assigner = PenAssigner(default_pen=default_pen)
+    assigner = PenAssigner(default_pen=default_pen, pen_sequence=pen_sequence)
     drawable: List[Tuple[Path, int, str]] = []
 
     for el in iter_renderable_elements(root):
