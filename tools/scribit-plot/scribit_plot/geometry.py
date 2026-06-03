@@ -5,6 +5,8 @@ import math
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
+import logging
+_log = logging.getLogger(__name__)
 
 def xy_to_lr(x_mm: float, y_mm: float, D_mm: float) -> Tuple[float, float]:
     """Convert wall XY (mm) to left/right cord lengths (mm)."""
@@ -68,7 +70,12 @@ def _solve_junction(
     x_j = x_pen
     y_j = max(y_pen - h_pen, 1.0)  # initial guess
 
-    for _ in range(20):
+    _log.debug(
+        "solve_junction init: x_pen=%.4f y_pen=%.4f D=%.4f h_pen=%.4f | x_j0=%.4f y_j0=%.4f",
+        x_pen, y_pen, D_mm, h_pen, x_j, y_j,
+    )
+
+    for i in range(20):
         theta = math.atan2(D_mm - 2.0 * x_j, 2.0 * y_j)
         sin_t = math.sin(theta)
         cos_t = math.cos(theta)
@@ -76,10 +83,12 @@ def _solve_junction(
         # Residuals
         fx = x_j - h_pen * sin_t - x_pen
         fy = y_j + h_pen * cos_t - y_pen
+        residual = math.hypot(fx, fy)
 
         # Jacobian (partial derivatives of θ wrt x_j and y_j)
         denom = (D_mm - 2.0 * x_j) ** 2 + (2.0 * y_j) ** 2
         if denom < 1e-12:
+            _log.debug("  iter %d: denom underflow — stopping", i)
             break
         dtheta_dxj = -2.0 * 2.0 * y_j / denom          # d(atan2)/dx_j
         dtheta_dyj = 2.0 * (D_mm - 2.0 * x_j) / denom  # d(atan2)/dy_j
@@ -93,16 +102,30 @@ def _solve_junction(
 
         det = dfx_dxj * dfy_dyj - dfx_dyj * dfy_dxj
         if abs(det) < 1e-15:
+            _log.debug("  iter %d: singular Jacobian (det=%.2e) — stopping", i, det)
             break
 
         dx_j = -(dfy_dyj * fx - dfx_dyj * fy) / det
         dy_j = -(dfx_dxj * fy - dfy_dxj * fx) / det
 
+        step = math.hypot(dx_j, dy_j)
+        _log.debug(
+            "  iter %d: x_j=%.6f y_j=%.6f theta=%.4f° residual=%.2e step=%.2e",
+            i, x_j, y_j, math.degrees(theta), residual, step,
+        )
+
         x_j += dx_j
         y_j += dy_j
 
-        if math.hypot(dx_j, dy_j) < 1e-6:
+        if step < 1e-6:
+            _log.debug("  iter %d: converged (step=%.2e)", i, step)
             break
+    else:
+        _log.warning(
+            "solve_junction did not converge in 20 iters: x_pen=%.4f y_pen=%.4f "
+            "final residual=%.2e x_j=%.6f y_j=%.6f",
+            x_pen, y_pen, residual, x_j, y_j,
+        )
 
     return x_j, y_j
 

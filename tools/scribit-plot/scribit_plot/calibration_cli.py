@@ -51,6 +51,9 @@ from .geometry import (
     xy_to_lr_calibrated,
 )
 
+import logging
+_log = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # Prediction helpers
 # ---------------------------------------------------------------------------
@@ -383,20 +386,29 @@ def _run_fit(
         print("ERROR: scipy is required for fitting. Install with: pip install scipy", file=sys.stderr)
         sys.exit(1)
 
+    # Track cost (RMS) at each function evaluation for the convergence plot.
+    _cost_history: List[float] = []
+
     if fit_mode == "robot":
         x0 = [50.0, 1.0, 1.0, D_initial, 0.0, 0.0]
         bounds = (
             [0.0,  0.8, 0.8, D_initial - 50, -100, -100],
             [200.0, 1.2, 1.2, D_initial + 50,  100,  100],
         )
-        def fun(p): return _residuals(p, measurements, centres, "robot", None, D_initial)
+        def fun(p):
+            r = _residuals(p, measurements, centres, "robot", None, D_initial)
+            _cost_history.append(math.sqrt(sum(v * v for v in r) / len(r)))
+            return r
     else:
         x0 = [D_initial, 0.0, 0.0]
         bounds = (
             [D_initial - 50, -100, -100],
             [D_initial + 50,  100,  100],
         )
-        def fun(p): return _residuals(p, measurements, centres, "wall", frozen_robot, D_initial)
+        def fun(p):
+            r = _residuals(p, measurements, centres, "wall", frozen_robot, D_initial)
+            _cost_history.append(math.sqrt(sum(v * v for v in r) / len(r)))
+            return r
 
     result = least_squares(fun, x0, bounds=bounds, method="trf", ftol=1e-9, xtol=1e-9)
 
@@ -425,7 +437,87 @@ def _run_fit(
             fitted_at=str(date.today()),
         )
 
-    return robot, wall, rms
+    return robot, wall, rms, _cost_history, result.fun
+
+
+# ---------------------------------------------------------------------------
+# Fit diagnostics plot
+# ---------------------------------------------------------------------------
+
+def _save_fitting_plot(
+    measurements: List[Tuple[str, str, float]],
+    centres: Dict[str, Tuple[float, float]],
+    robot: RobotProfile,
+    wall: WallProfile,
+    final_residuals: List[float],  # one per measurement, in order
+    cost_history: List[float],     # RMS at every function evaluation
+    out_path: Path,
+    fit_mode: str,
+) -> None:
+    """Save a two-panel diagnostic PNG next to the profile outputs."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import matplotlib.ticker as ticker
+    except ImportError:
+        _log.warning("matplotlib not installed — skipping fitting plot")
+        return
+
+    fig, (ax_conv, ax_res) = plt.subplots(1, 2, figsize=(12, 5))
+    fig.suptitle(
+        f"Calibration fit diagnostics  ({fit_mode})   RMS = {math.sqrt(sum(r*r for r in final_residuals)/len(final_residuals)):.3f} mm",
+        fontsize=12,
+    )
+
+    # --- Left panel: convergence curve ---
+    ax_conv.plot(cost_history, color="steelblue", linewidth=1.5)
+    ax_conv.axhline(cost_history[-1], color="tomato", linestyle="--", linewidth=1,
+                    label=f"final RMS = {cost_history[-1]:.3f} mm")
+    # mark the first evaluation where we dropped below 2× final
+    threshold = cost_history[-1] * 2.0
+    for i, c in enumerate(cost_history):
+        if c <= threshold:
+            ax_conv.axvline(i, color="orange", linestyle=":", linewidth=1,
+                            label=f"<2× final @ eval {i}")
+            break
+    ax_conv.set_xlabel("Function evaluation #")
+    ax_conv.set_ylabel("RMS residual (mm)")
+    ax_conv.set_title("Convergence")
+    ax_conv.set_yscale("log")
+    ax_conv.yaxis.set_major_formatter(ticker.FuncFormatter(lambda y, _: f"{y:.3g}"))
+    ax_conv.legend(fontsize=8)
+    ax_conv.grid(True, which="both", alpha=0.3)
+
+    # --- Right panel: measured vs predicted per pair ---
+    labels = [f"{a}→{b}" for a, b, _ in measurements]
+    measured = [m for _, _, m in measurements]
+    predicted = [m - r for m, r in zip(measured, final_residuals)]
+    errors = list(final_residuals)
+
+    x = range(len(labels))
+    ax_res.bar(x, errors, color=["tomato" if abs(e) > 2 else "steelblue" for e in errors],
+               alpha=0.8, label="residual (predicted − measured)")
+    ax_res.axhline(0, color="black", linewidth=0.8)
+    # ±1 mm and ±2 mm reference bands
+    ax_res.axhspan(-1, 1, alpha=0.08, color="green", label="±1 mm band")
+    ax_res.axhspan(-2, 2, alpha=0.05, color="orange", label="±2 mm band")
+    # RMS line
+    rms_val = math.sqrt(sum(r * r for r in errors) / len(errors))
+    ax_res.axhline(rms_val, color="tomato", linestyle="--", linewidth=1, label=f"+RMS={rms_val:.2f} mm")
+    ax_res.axhline(-rms_val, color="tomato", linestyle="--", linewidth=1)
+
+    ax_res.set_xticks(list(x))
+    ax_res.set_xticklabels(labels, rotation=45, ha="right", fontsize=7)
+    ax_res.set_ylabel("Residual (mm)")
+    ax_res.set_title("Per-measurement residuals  (red bar = |error| > 2 mm)")
+    ax_res.legend(fontsize=8)
+    ax_res.grid(axis="y", alpha=0.3)
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=130)
+    plt.close(fig)
+    print(f"Wrote fitting plot: {out_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -532,7 +624,7 @@ def _guided_fit(
     print()
     print(f"Collected {len(measurements)} measurements. Running fit ...")
 
-    robot_out, wall_out, rms = _run_fit(
+    robot_out, wall_out, rms, cost_history, final_residuals = _run_fit(
         measurements, centres, fit_mode, frozen_robot, D_nominal
     )
 
@@ -557,6 +649,12 @@ def _guided_fit(
     # --- save outputs ---
     robot_out_path = Path(getattr(args, "robot_out", None) or "robot.json")
     wall_out_path = Path(args.wall_out)
+
+    plot_path = wall_out_path.with_suffix(".fitting.png")
+    _save_fitting_plot(
+        measurements, centres, robot_out, wall_out,
+        list(final_residuals), cost_history, plot_path, fit_mode,
+    )
 
     if fit_mode == "robot":
         save_robot_profile(robot_out, robot_out_path)
@@ -706,6 +804,12 @@ def build_argparser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[%(levelname)s] %(message)s",
+    )
+
     ap = build_argparser()
     args = ap.parse_args()
     args.func(args)
